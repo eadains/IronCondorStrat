@@ -1,0 +1,4 @@
+click
+python-dotenv
+flake8
+black
