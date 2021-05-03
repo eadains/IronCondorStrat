@@ -67,14 +67,14 @@ def train_model(indep_vars, dep_var):
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 100, 2)
 
     swa_model = AveragedModel(model)
-    swa_start = 750
+    swa_start = 1500
     swa_scheduler = SWALR(
         optimizer, swa_lr=0.001, anneal_epochs=10, anneal_strategy="cos"
     )
 
     model.train()
     swa_model.train()
-    for epoch in range(1000):
+    for epoch in range(2000):
         optimizer.zero_grad()
         output = model(indep_vars)
 

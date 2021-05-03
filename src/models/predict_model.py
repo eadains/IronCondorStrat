@@ -3,7 +3,7 @@
 # Input path: /data/processed
 # Output path: /reports
 import pandas as pd
-from scipy.stats import norm
+from scipy.stats import norm, t
 from scipy.optimize import minimize
 import numpy as np
 from train_model import train_model
@@ -171,8 +171,9 @@ class OptionPosition:
         Simulates future returns and determines option position PNL.
         Returns the kelly criterion betting percentage by optimizing the log of wealth
         """
-        # MDNVol outputs 5 day volatility, so we need to divide by sqrt(52) to get
-        returns = norm.rvs(0, self.vols)
+        # Sample returns from Student's T with 5 degrees of freedom to account
+        # for kurtosis risk.
+        returns = t.rvs(5, 0, self.vols)
         prices = self.underlying_price * (1 + returns)
         vfunc = np.vectorize(self.position.pnl)
         # Each option is 100 shares and return is based on an investment of $1000,
@@ -185,7 +186,14 @@ class OptionPosition:
         print(f"Mean Profit on Win: {round(np.mean(pnl[pnl > 0]) * 100, 2)}%")
         print(f"Mean Profit on Loss: {round(np.mean(pnl[pnl < 0]) * 100, 2)}%")
         print(
-            f"Forecasted 5-day Volatility (Annualized): {round(np.mean(self.vols) * np.sqrt(252 / 5) * 100, 2)}% +/- {round(np.std(self.vols) * np.sqrt(252 /5) * 100, 2)}%"
+            f"Forecasted 5-day Volatility (Annualized): {round(np.median(self.vols) * np.sqrt(252 / 5) * 100, 2)}%"
+        )
+        print(
+            f"5 / 95 percentile Volatility: {round(np.percentile(self.vols, 5) * np.sqrt(252 /5) * 100, 2)}% :: {round(np.percentile(self.vols, 95) * np.sqrt(252 /5) * 100, 2)}%"
+        )
+        print(f"Forecasted 5-day Price: {round(np.median(prices), 2)}")
+        print(
+            f"5 / 95 percentile Price: {int(np.percentile(prices, 5))} :: {int(np.percentile(prices, 95))}"
         )
 
         initial = np.random.rand()
@@ -233,6 +241,9 @@ def main(input_path, output_path):
     dte = 5
     risk_free_rate = 0.0006
     position = OptionPosition(chain, vols, dte, risk_free_rate)
+
+    # Print date of last variable observation for error checking
+    print(indep_vars.index[-1])
 
     # TODO: Make this better and output to a file in the reports section
     position.calc_kelly()
