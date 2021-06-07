@@ -3,12 +3,15 @@
 # Input path: /data/processed
 # Output path: /reports
 import pandas as pd
-from scipy.stats import norm, t
+from scipy.stats import norm
 from scipy.optimize import minimize
 import numpy as np
 from train_model import train_model
 import click
 import torch
+import os
+from dotenv import find_dotenv, load_dotenv
+from twilio.rest import Client
 
 
 def bs_price(right, S, K, T, sigma, r):
@@ -57,8 +60,8 @@ class ShortIronCondor:
         self.premium = (call["mid_price"] + put["mid_price"]) - (
             hedge_put["mid_price"] + hedge_call["mid_price"]
         )
-        # Deflate the premium by 15% to be conservative and account for slippage
-        self.premium = 0.85 * self.premium
+        # Deflate the premium by 10% to be conservative and account for slippage
+        self.premium = 0.90 * self.premium
         self.max_loss = put["strike"] - hedge_put["strike"] - self.premium
 
     def pnl(self, underlying_price):
@@ -112,7 +115,7 @@ class OptionPosition:
 
     def calc_values(self):
         """
-        Calcuates Mid price and skew premium for each option in chain
+        Calculates Mid price and skew premium for each option in chain
         """
         atm_contract_index = (
             np.abs(self.chain["strike"] - self.underlying_price)
@@ -173,39 +176,34 @@ class OptionPosition:
         """
         # Sample returns from Student's T with 5 degrees of freedom to account
         # for kurtosis risk.
-        returns = t.rvs(5, 0, self.vols)
+        returns = norm.rvs(0, self.vols)
         prices = self.underlying_price * (1 + returns)
         vfunc = np.vectorize(self.position.pnl)
         # Each option is 100 shares and return is based on an investment of $1000,
         # so 100 / 1000 = 10
         pnl = vfunc(prices) / 10
 
-        print(f"Short put strike: {self.short_put['strike']}")
-        print(f"Short call strike: {self.short_call['strike']}")
-        print(f"Probability of Profit: {round(len(pnl[pnl > 0]) / len(pnl) * 100, 2)}%")
-        print(f"Mean Profit on Win: {round(np.mean(pnl[pnl > 0]) * 100, 2)}%")
-        print(f"Mean Profit on Loss: {round(np.mean(pnl[pnl < 0]) * 100, 2)}%")
-        print(
-            f"Forecasted 5-day Volatility (Annualized): {round(np.median(self.vols) * np.sqrt(252 / 5) * 100, 2)}%"
-        )
-        print(
-            f"5 / 95 percentile Volatility: {round(np.percentile(self.vols, 5) * np.sqrt(252 /5) * 100, 2)}% :: {round(np.percentile(self.vols, 95) * np.sqrt(252 /5) * 100, 2)}%"
-        )
-        print(f"Forecasted 5-day Price: {round(np.median(prices), 2)}")
-        print(
-            f"5 / 95 percentile Price: {int(np.percentile(prices, 5))} :: {int(np.percentile(prices, 95))}"
-        )
-
-        initial = np.random.rand()
+        initial = 0.50
         result = minimize(log_wealth_optim, initial, (pnl))
 
-        print(f"Kelly Bet Percentage: {round(result.x[0] * 100, 2)}%")
+        # Compile necessary information for trading
+        response = {
+            "shortput": int(self.short_put.strike),
+            "shortcall": int(self.short_call.strike),
+            "kelly": round(result.x[0] * 100, 2),
+            "vol": round(np.median(self.vols) * np.sqrt(252 / 5) * 100, 2),
+            "vol_5": round(np.percentile(self.vols, 5) * np.sqrt(252 / 5) * 100, 2),
+            "vol_95": round(np.percentile(self.vols, 95) * np.sqrt(252 / 5) * 100, 2),
+        }
+
+        return response
 
 
 @click.command()
 @click.argument("input_path", type=click.Path())
 @click.argument("output_path", type=click.Path())
 def main(input_path, output_path):
+    load_dotenv(find_dotenv())
     # TODO: Shift dropna to build_features.py
     indep_vars = pd.read_csv(
         input_path + "/indep_vars.csv", index_col="date", parse_dates=True
@@ -224,16 +222,14 @@ def main(input_path, output_path):
     # Model expects column vector input
     dep_var = torch.Tensor(dep_var.values).view(-1, 1)
 
-    model = train_model(indep_vars_train, dep_var)
+    model = train_model(indep_vars_train, dep_var, verbose=True)
     # Select most recent data to predict future volatility
     # Model expects row vector as input
     indep_vars_predict = torch.Tensor(indep_vars.iloc[-1]).view(1, -1)
 
-    vols = model(indep_vars_predict).sample([100000]).squeeze().numpy()
+    vols = model(indep_vars_predict).sample([10000000]).squeeze().numpy()
     # Un-transform vols to standard deviation
     vols = np.sqrt(np.exp(vols))
-    # Inflate volatility by 10% to be conservative about bet sizing
-    vols = vols * 1.10
 
     # Get Option chain data and define parameters
     # TODO: Make parameters as input instead of fixed
@@ -242,11 +238,18 @@ def main(input_path, output_path):
     risk_free_rate = 0.0006
     position = OptionPosition(chain, vols, dte, risk_free_rate)
 
-    # Print date of last variable observation for error checking
-    print(indep_vars.index[-1])
+    response = position.calc_kelly()
 
-    # TODO: Make this better and output to a file in the reports section
-    position.calc_kelly()
+    message_body = f"""{indep_vars.index[-1]}\nEstimated Vol: {response["vol_5"]} - {response["vol"]} - {response["vol_95"]} \
+    \nKelly Percent: {response["kelly"]}\nShort Put Strike: {response["shortput"]}\nShort Call Strike: {response["shortcall"]}"""
+    client = Client(os.environ.get("TWILIO_SID"), os.environ.get("TWILIO_TOKEN"))
+    message = client.messages.create(
+        body=message_body,
+        from_=os.environ.get("TWILIO_NUMBER"),
+        to=os.environ.get("PERSONAL_NUMBER"),
+    )
+
+    print(message.sid)
 
 
 if __name__ == "__main__":

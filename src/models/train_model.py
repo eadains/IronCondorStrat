@@ -50,7 +50,7 @@ class MDN(nn.Module):
         return MixtureSameFamily(cat, normal)
 
 
-def train_model(indep_vars, dep_var):
+def train_model(indep_vars, dep_var, verbose=True):
     """
     Trains MDNVol network. Uses AdamW optimizer with cosine annealing learning rate schedule.
     Ouputs averaged model over the last 25% of training epochs.
@@ -67,14 +67,14 @@ def train_model(indep_vars, dep_var):
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 100, 2)
 
     swa_model = AveragedModel(model)
-    swa_start = 1500
+    swa_start = 750
     swa_scheduler = SWALR(
         optimizer, swa_lr=0.001, anneal_epochs=10, anneal_strategy="cos"
     )
 
     model.train()
     swa_model.train()
-    for epoch in range(2000):
+    for epoch in range(1000):
         optimizer.zero_grad()
         output = model(indep_vars)
 
@@ -90,7 +90,8 @@ def train_model(indep_vars, dep_var):
             scheduler.step()
 
         if epoch % 10 == 0:
-            print(f"Epoch {epoch} complete. Loss: {loss}")
+            if verbose:
+                print(f"Epoch {epoch} complete. Loss: {loss}")
 
     swa_model.eval()
     return swa_model
