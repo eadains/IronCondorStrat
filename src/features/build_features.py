@@ -50,10 +50,11 @@ def main(input_path, output_path):
     spx_minute = pd.read_csv(
         input_path + "/SPX_1min.csv",
         header=0,
-        names=["datetime", "open", "high", "low", "close"],
+        names=["datetime", "open", "high", "low", "close", "unknown"],
         index_col="datetime",
         parse_dates=True,
     )
+    print(spx_minute.head())
     spx_variance = rv_calc(spx_minute)
 
     spx_returns = pd.read_csv(
